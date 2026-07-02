@@ -104,8 +104,9 @@ def create_app() -> FastAPI:
     def health():
         return {"ok": True, "logged_in": _is_logged_in()}
 
-    # 静态文件（Plan B 构建 dist 后挂载；目录不存在时跳过避免报错）
-    dist = Path("frontend/dist")
+    # 静态文件：从 backend/app/main.py 解析到项目根目录的 frontend/dist
+    # 这样无论从 backend/ 还是项目根启动都能正确挂载
+    dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
     if dist.exists():
         app.mount("/", StaticFiles(directory=str(dist), html=True), name="static")
 
