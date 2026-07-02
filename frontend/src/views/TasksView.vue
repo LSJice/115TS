@@ -248,7 +248,7 @@ onUnmounted(() => {
           <template #default="{ row }">
             <el-button
               v-if="row.status === 'failed'"
-              type="text"
+              link
               size="small"
               @click="retry(row.id)"
             >
@@ -256,7 +256,7 @@ onUnmounted(() => {
             </el-button>
             <el-button
               v-if="row.status === 'failed' || row.status === 'done'"
-              type="text"
+              link
               size="small"
               @click="editCategory(row)"
             >

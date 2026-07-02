@@ -66,7 +66,7 @@ function go(name: string) {
           <el-tag v-if="auth.loggedIn" type="success" size="small">已登录</el-tag>
           <el-tag v-else type="warning" size="small">未登录</el-tag>
           <el-button
-            type="text"
+            link
             style="margin-left: 16px; color: #f56c6c"
             @click="handleLogout"
           >

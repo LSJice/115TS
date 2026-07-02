@@ -35,7 +35,7 @@ async function deleteItem(id: number) {
     ElMessage.success('已删除')
     await fetchHistory()
   } catch (e: any) {
-    if (e === 'cancel') return
+    if (e === 'cancel' || e === 'close') return
     ElMessage.error(`删除失败：${e.message}`)
   }
 }
@@ -129,7 +129,7 @@ onMounted(() => {
       <el-table-column label="操作" width="100" fixed="right">
         <template #default="{ row }">
           <el-button
-            type="text"
+            link
             size="small"
             style="color: #f56c6c"
             @click="deleteItem(row.id)"
