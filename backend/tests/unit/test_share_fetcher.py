@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 
 def make_login_manager_mock(resp_data: dict):
@@ -46,3 +46,43 @@ async def test_fetch_handles_error_state():
     fetcher = ShareFetcher(lm)
     with pytest.raises(ShareFetchError):
         await fetcher.fetch(share_id="bad", password=None)
+
+
+@pytest.mark.asyncio
+async def test_fetch_wraps_client_exception():
+    """share_snap 抛异常时包装为 ShareFetchError。"""
+    from app.services.share_fetcher import ShareFetcher, ShareFetchError
+
+    lm = MagicMock()
+    client = MagicMock()
+    client.share_snap = MagicMock(side_effect=RuntimeError("network down"))
+    lm.get_client.return_value = client
+    lm.is_logged_in.return_value = True
+
+    fetcher = ShareFetcher(lm)
+    with pytest.raises(ShareFetchError):
+        await fetcher.fetch(share_id="abc", password=None)
+
+
+@pytest.mark.asyncio
+async def test_fetch_empty_file_list_returns_empty_names():
+    """file_list 为空时返回空列表，root_name 回退到 share_id。"""
+    from app.services.share_fetcher import ShareFetcher
+
+    lm = make_login_manager_mock({"data": {"file_name": "x"}, "state": True})
+    fetcher = ShareFetcher(lm)
+    content = await fetcher.fetch(share_id="abc", password=None)
+    assert content.file_names == []
+    assert content.root_name == "x"
+
+
+@pytest.mark.asyncio
+async def test_fetch_data_none_uses_share_id_as_root():
+    """data 为 None 时 root_name 回退到 share_id。"""
+    from app.services.share_fetcher import ShareFetcher
+
+    lm = make_login_manager_mock({"state": True, "data": None})
+    fetcher = ShareFetcher(lm)
+    content = await fetcher.fetch(share_id="abc", password=None)
+    assert content.root_name == "abc"
+    assert content.file_names == []

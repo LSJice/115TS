@@ -13,8 +13,8 @@ class ShareFetchError(Exception):
 @dataclass
 class ShareContent:
     root_name: str            # 分享根目录/根文件名
-    file_names: list[str]     # 分享内所有文件的扁平路径（含子目录）
-    raw: dict                 # 原始响应，调试用
+    file_names: list[str]     # 分享根目录下的顶层文件名（不递归子目录）
+    raw: dict                 # 原始响应，仅调试用，勿序列化到 SSE/API 响应（可能含分享者 PII）
 
 
 class ShareFetcher:
