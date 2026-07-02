@@ -38,7 +38,7 @@ client.interceptors.response.use(
     if (status === 401) {
       // 排除 /api/auth/check 本身（用于启动时检查登录态）
       const url = error.config?.url || ''
-      if (!url.includes('/api/auth/check') && !url.includes('/api/auth/qrcode')) {
+      if (!url.endsWith('/api/auth/check') && !url.endsWith('/api/auth/qrcode')) {
         setToken('')
         ElMessage.error('登录已失效或未授权，请重新登录')
         // 避免在登录页本身循环跳转

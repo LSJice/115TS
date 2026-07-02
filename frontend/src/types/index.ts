@@ -88,7 +88,7 @@ export interface DirNode {
 
 export interface TaskStreamEvent {
   task_id: number
-  status: string
-  target_path?: string
-  error?: string
+  status: TaskOut['status']
+  target_path?: string | null
+  error?: string | null
 }
