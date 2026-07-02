@@ -23,6 +23,8 @@ def test_after_record_seen(deduper):
     result = deduper.is_processed("hash1")
     assert result is not None
     assert result["task_id"] == 42
+    assert result["status"] == "done"
+    assert isinstance(result, dict)
 
 
 def test_concurrent_insert_only_one_wins(deduper):
