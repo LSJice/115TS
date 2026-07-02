@@ -39,9 +39,13 @@ class LoginManager:
             if row is None:
                 return None
             plain = decrypt(row.value)
+            if plain is None:
+                logger.warning("cookie row exists but decrypt returned None (key rotated or corrupted?)")
+                return None
             try:
-                return json.loads(plain) if plain else None
+                return json.loads(plain)
             except json.JSONDecodeError:
+                logger.warning("cookie row exists but JSON decode failed")
                 return None
 
     def _save_cookies(self, cookies: dict) -> None:
@@ -59,7 +63,7 @@ class LoginManager:
     def is_logged_in(self) -> bool:
         return self._load_cookies() is not None
 
-    def get_client(self):
+    def get_client(self) -> "P115Client":
         if self._client is not None:
             return self._client
         from p115client import P115Client
@@ -80,7 +84,7 @@ class LoginManager:
             _upsert_qr_payload(data)
             return QRStatus(state="waiting", qrcode_url=qrcode)
         except Exception as e:
-            logger.exception("start_qrcode_login failed")
+            logger.error("start_qrcode_login failed: {}", type(e).__name__)
             return QRStatus(state="error", message=str(e))
 
     async def poll_qrcode_status(self) -> QRStatus:
@@ -96,11 +100,17 @@ class LoginManager:
             msg = (resp.get("data") or {}).get("msg", "")
             if code == 0:
                 cookies = client.cookies
-                # cookies 可能是 RequestsCookieJar/dict，统一转 dict 存储
+                # 优先用 requests.utils.dict_from_cookiejar（处理 RequestsCookieJar）
                 try:
-                    cookies_dict = dict(cookies)
-                except (TypeError, ValueError):
-                    cookies_dict = {"raw": str(cookies)}
+                    from requests.utils import dict_from_cookiejar
+                    cookies_dict = dict_from_cookiejar(cookies)
+                except Exception:
+                    # 兜底尝试 dict()
+                    try:
+                        cookies_dict = dict(cookies)
+                    except (TypeError, ValueError) as e:
+                        logger.error("login confirmed but cookies conversion failed: {}", type(e).__name__)
+                        return QRStatus(state="error", message="cookies 转换失败")
                 self._save_cookies(cookies_dict)
                 return QRStatus(state="confirmed", message="登录成功")
             if code == 1:
@@ -111,7 +121,7 @@ class LoginManager:
                 return QRStatus(state="expired", message="二维码过期")
             return QRStatus(state="error", message=f"未知 code={code} msg={msg}")
         except Exception as e:
-            logger.exception("poll_qrcode_status failed")
+            logger.error("poll_qrcode_status failed: {}", type(e).__name__)
             return QRStatus(state="error", message=str(e))
 
     def logout(self) -> None:
