@@ -55,3 +55,13 @@ def get_session() -> Iterator[Session]:
         yield session
     finally:
         session.close()
+
+
+def reset_running_to_pending(session_factory) -> int:
+    """启动钩子：把所有 running 状态的任务回退为 pending。
+    返回重置的行数。"""
+    with session_factory() as s:
+        from app.models import Task
+        count = s.query(Task).filter_by(status="running").update({Task.status: "pending"})
+        s.commit()
+        return count
