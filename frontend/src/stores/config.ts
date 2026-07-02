@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { configApi } from '@/api/config'
-import type { ConfigOut } from '@/types'
+import type { ConfigOut, ConfigUpdate } from '@/types'
 
 export const useConfigStore = defineStore('config', () => {
   const data = ref<ConfigOut | null>(null)
@@ -18,7 +18,7 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  async function save(patch: Partial<ConfigOut>): Promise<ConfigOut> {
+  async function save(patch: ConfigUpdate): Promise<ConfigOut> {
     const resp = await configApi.update(patch)
     data.value = resp
     return resp
