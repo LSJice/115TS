@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import { authApi } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 
@@ -9,7 +8,8 @@ const router = useRouter()
 const auth = useAuthStore()
 
 const qrcodeUrl = ref<string>('')
-const state = ref<string>('idle') // idle | waiting | success | error
+type LoginState = 'idle' | 'waiting' | 'success' | 'error'
+const state = ref<LoginState>('idle')
 const message = ref<string>('正在获取二维码…')
 let pollTimer: number | null = null
 
