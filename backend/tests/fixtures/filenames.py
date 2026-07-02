@@ -4,7 +4,7 @@ SAMPLES = [
     # 电视剧：S01E01 / 第N集 / EP01
     (["Game.of.Thrones.S01E01.1080p.mkv", "Game.of.Thrones.S01E02.mkv"], "电视剧"),
     (["某剧.第03集.WEB-DL.mp4"], "电视剧"),
-    (["Anime.Series.EP12.mkv"], "电视剧"),  # EP 走电视剧（动漫也是 TV 类型）
+    (["Anime.Series.EP12.mkv"], "电视剧"),  # EP12 命中电视剧规则（动漫规则需番名关键词）
     # 电影：单一视频文件，年份在括号里
     (["Avatar.2009.2160p.UHD.mkv"], "电影"),
     (["The.Dark.Knight.2008.mkv"], "电影"),
@@ -18,4 +18,8 @@ SAMPLES = [
     (["machinelearning-lecture-01.pdf"], "学习"),
     # 未命中：未知
     (["random-file.bin"], "_未分类"),
+    # 跨规则优先级链：学习 > 动漫 > 电视剧 > 综艺 > 电影 > _未分类
+    (["Python教程.2024.E01.mp4"], "学习"),        # 学习 > 电影/电视剧
+    (["鬼灭之刃.S01E01.2023.mkv"], "动漫"),       # 动漫 > 电视剧 > 电影
+    (["奔跑吧.2024.mp4"], "综艺"),                # 综艺 > 电影（不命中电视剧）
 ]

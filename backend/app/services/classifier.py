@@ -5,7 +5,7 @@ from typing import Iterable
 RULES: list[tuple[str, re.Pattern]] = [
     # 学习类优先（防止 mp4 教程被误判为电影/剧）
     ("学习", re.compile(
-        r"(教程|课程|讲义|lec\d+|lecture|coursera|udemy|tTC|TTC|\.pdf$|\.pptx?$|\.docx?$)",
+        r"(教程|课程|讲义|lec\d+|lecture|coursera|udemy|TTC|\.pdf$|\.pptx?$|\.docx?$)",
         re.IGNORECASE,
     )),
     # 动漫：常见番剧关键词 + 日文假名片段
