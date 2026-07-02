@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
@@ -109,6 +110,23 @@ def create_app() -> FastAPI:
     dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
     if dist.exists():
         app.mount("/", StaticFiles(directory=str(dist), html=True), name="static")
+
+        # SPA fallback：对非 API/docs 的 GET 请求返回 index.html
+        # 解决 createWebHistory 模式下直接访问 /tasks 等子路由 404 的问题
+        @app.exception_handler(404)
+        async def spa_fallback(request: Request, exc):
+            path = request.url.path
+            if (request.method != "GET"
+                    or path.startswith("/api")
+                    or path.startswith("/docs")
+                    or path.startswith("/openapi")
+                    or path.startswith("/healthz")
+                    or path.startswith("/redoc")):
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
+            index = dist / "index.html"
+            if index.exists():
+                return FileResponse(str(index))
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
 
     return app
 
