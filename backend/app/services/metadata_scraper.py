@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import httpx
+from loguru import logger
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,9 @@ class MetadataScraper:
             try:
                 resp = await client.get(f"{self.BASE}/search/{endpoint}", params=params)
                 resp.raise_for_status()
-            except httpx.HTTPError:
+            except httpx.HTTPError as e:
+                # 注意：不打印异常详情或 URL，因为 URL/params 中含 api_key
+                logger.warning("TMDB search failed: {}", type(e).__name__)
                 return None
             data = resp.json()
         results = data.get("results", [])
