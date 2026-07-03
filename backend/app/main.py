@@ -70,8 +70,18 @@ async def lifespan(app: FastAPI):
     n = reset_running_to_pending(get_session)
     if n > 0:
         logger.info("启动时恢复 {} 个未完成任务", n)
-    # 装配服务
+    # 装配核心服务
     lm, share_fetcher, md_scraper, path_resolver, transfer_task = _wiring_services()
+
+    # 装配 Telegram 适配器（start() 内部 token 缺失自动跳过）
+    from app.adapters.telegram_bot import TelegramAdapter
+    tg_adapter = TelegramAdapter(
+        bot_token=settings.telegram_bot_token,
+        allowed_chat_ids=settings.telegram_allowed_chat_ids,
+        allowed_user_ids=settings.telegram_allowed_user_ids,
+        admin_user_id=settings.telegram_admin_user_id,
+    )
+
     _runner = TaskRunner(
         session_factory=get_session,
         login_manager=lm,
@@ -81,14 +91,55 @@ async def lifespan(app: FastAPI):
         path_resolver=path_resolver,
         transfer_task=transfer_task,
         broadcaster=broadcaster,
+        tg_adapter=tg_adapter,
     )
     _runner.start()
-    logger.info("TaskRunner started")
+
+    # 装配飞书适配器（配置缺失时跳过）
+    feishu_adapter = None
+    if settings.feishu_app_id and settings.feishu_app_token:
+        from app.adapters.feishu_client import FeishuClient
+        from app.adapters.feishu_sheet import FeishuAdapter
+        feishu_client = FeishuClient(
+            app_id=settings.feishu_app_id,
+            app_secret=settings.feishu_app_secret,
+            app_token=settings.feishu_app_token,
+            table_id=settings.feishu_table_id,
+            link_column=settings.feishu_link_column,
+            code_column=settings.feishu_code_column,
+            remark_column=settings.feishu_remark_column,
+        )
+        feishu_adapter = FeishuAdapter(
+            client=feishu_client,
+            interval_minutes=settings.feishu_poll_interval_minutes,
+            tg_adapter=tg_adapter,
+        )
+        try:
+            feishu_adapter.start_scheduler()
+        except Exception as e:
+            logger.error("feishu scheduler start failed: {}", type(e).__name__)
+
+    # 启动 TG 适配器（最后启动，避免漏消息）
+    try:
+        await tg_adapter.start()
+    except Exception as e:
+        logger.error("telegram adapter start failed: {}", type(e).__name__)
+
+    logger.info("TaskRunner + adapters started")
     try:
         yield
     finally:
+        if feishu_adapter:
+            try:
+                feishu_adapter.stop_scheduler()
+            except Exception as e:
+                logger.error("feishu scheduler stop failed: {}", type(e).__name__)
+        try:
+            await tg_adapter.stop()
+        except Exception as e:
+            logger.error("telegram adapter stop failed: {}", type(e).__name__)
         _runner.stop()
-        logger.info("TaskRunner stopped")
+        logger.info("TaskRunner + adapters stopped")
 
 
 def create_app() -> FastAPI:
