@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_allowed_chat_ids: Annotated[List[int], NoDecode] = Field(default_factory=list)
     telegram_allowed_user_ids: Annotated[List[int], NoDecode] = Field(default_factory=list)
+    telegram_admin_user_id: int = 0  # 0 表示取 ALLOWED_USER_IDS[0]
 
     # 飞书（Plan B 用）
     feishu_app_id: str = ""

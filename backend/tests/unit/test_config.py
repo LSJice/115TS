@@ -29,3 +29,22 @@ def test_telegram_allowed_ids_parses_csv(monkeypatch):
 
     s = Settings()
     assert s.telegram_allowed_chat_ids == [-100123456, -100987654]
+
+
+def test_telegram_admin_user_id_defaults_zero(monkeypatch):
+    """未配置时默认 0（main.py 取 allowed_user_ids[0] 兜底）。"""
+    monkeypatch.delenv("TELEGRAM_ADMIN_USER_ID", raising=False)
+    monkeypatch.setenv("ENCRYPTION_KEY", "dGVzdC1rZXktMzItYnl0ZXMtbG9uZy1lbm91Z2g=")
+    from app.config import Settings
+
+    s = Settings()
+    assert s.telegram_admin_user_id == 0
+
+
+def test_telegram_admin_user_id_loaded_from_env(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ADMIN_USER_ID", "999")
+    monkeypatch.setenv("ENCRYPTION_KEY", "dGVzdC1rZXktMzItYnl0ZXMtbG9uZy1lbm91Z2g=")
+    from app.config import Settings
+
+    s = Settings()
+    assert s.telegram_admin_user_id == 999
