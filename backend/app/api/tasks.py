@@ -15,32 +15,14 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 @router.post("", response_model=TaskOut)
 async def create_task(body: TaskCreate):
-    link = parse(body.raw_input)
-    if link is None:
+    from app.services import task_service
+    task, status = task_service.enqueue_from_external(
+        source="web", raw_input=body.raw_input,
+    )
+    if task is None:
+        # status == 'invalid'：无法解析
         raise HTTPException(400, "无法解析 115 链接")
-    with get_session() as s:
-        existing = s.query(Task).filter_by(share_hash=link.share_hash).first()
-        if existing is not None:
-            # 幂等：返回已存在任务
-            return TaskOut.model_validate(existing)
-        t = Task(
-            source="web",
-            raw_input=body.raw_input,
-            share_url=f"https://115.com/s/{link.share_id}",
-            share_code=link.password,
-            share_hash=link.share_hash,
-            status="pending",
-            created_at=int(time.time()),
-        )
-        s.add(t)
-        s.commit()
-        s.refresh(t)
-        # 入队
-        from app.main import get_runner
-        runner = get_runner()
-        if runner:
-            runner.enqueue(t.id)
-        return TaskOut.model_validate(t)
+    return TaskOut.model_validate(task)
 
 
 @router.get("", response_model=List[TaskOut])
