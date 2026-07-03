@@ -20,6 +20,8 @@ dist/
 *.log
 backend/pytest_out.log
 backend/pytest_err.log
+backend/stdout.txt
+backend/stderr.txt
 
 # IDE
 .idea/

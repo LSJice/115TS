@@ -86,7 +86,7 @@ _resolve_cid：递归解析 → 缺失目录 mkdir_p → 返回目标 cid
 | 决策点 | 选择 | 理由 |
 |---|---|---|
 | 计划拆分 | 单一计划三段顺序实施 | 子系统共享 enqueue 接口与 AuthExpired 策略；放一起易保持一致性 |
-| `_resolve_cid` 失败回退 | 自动 mkdir_p 创建缺失目录 | 鲁棒；逐级 mkdir 不会因 115 目录结构差异失败 |
+| `_resolve_cid` 失败回退 | 仅"目录确实不存在"时自动 mkdir_p；未预期异常直接失败 | 鲁棒且不掩盖 bug；逐级 mkdir 不会因 115 目录结构差异失败，同时避免把未知错误也悄悄当作"降级"处理 |
 | TG Bot token 缺失 | 警告后跳过适配器加载 | 个人工具多场景部署；其他来源不受影响 |
 | AuthExpired 推送 | TG 推首个 allowed_user_id；飞书复用 TG 兜底 | 飞书表只读不能写回；TG 是唯一可达通道 |
 | 飞书位点 | 不持久化，全量拉取 + hash 去重 | 飞书表只读；hash UNIQUE 约束已实现幂等 |
@@ -133,7 +133,7 @@ _resolve_cid：递归解析 → 缺失目录 mkdir_p → 返回目标 cid
 | `backend/app/api/tasks.py` | create_task 复用 task_service（保持现有 API 行为） |
 | `backend/app/api/config.py` | `POST /api/config/feishu/test` 实际调用 FeishuClient |
 | `backend/app/config.py` | 新增 `telegram_admin_user_id`（默认 0，未配置则取 allowed_user_ids[0]） |
-| `backend/requirements.txt` | 新增 `python-telegram-bot~=13.15` / `apscheduler~=3.10` |
+| `backend/requirements.txt` | 新增 `python-telegram-bot~=21.0`（异步 `Application`/`ApplicationBuilder` API，v20+ 才有；13.x 是纯同步 API，与 5.2 节代码不兼容） / `apscheduler~=3.10` |
 
 ---
 
@@ -247,13 +247,16 @@ class TelegramAdapter:
 
     @staticmethod
     def _extract_115_links(text: str) -> list[str]:
-        """从消息文本切出含链接（含可能的提取码后缀）的片段。"""
+        """从消息文本切出含链接（含可能的提取码后缀）的片段。
+
+        先切出"链接+提取码"片段，再从**挖空这些片段后剩余的文本**里补抓裸链接——
+        避免一条消息里"一个带提取码的链接 + 一个裸链接"混发时，裸链接被整体丢弃
+        （旧实现是 slices 非空就直接 return，裸链接永远够不到 fallback 分支）。
+        """
         slices = [m.group(0) for m in _LINK_SLICE_RE.finditer(text)]
-        if slices:
-            return slices
-        # 回退：仅匹配 URL 本身
-        urls = URL_RE.findall(text) or SHORT_RE.findall(text)
-        return urls
+        remaining = _LINK_SLICE_RE.sub("", text)
+        bare = URL_RE.findall(remaining) or SHORT_RE.findall(remaining)
+        return slices + bare
 
     async def _handle_message(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
@@ -389,8 +392,8 @@ class FeishuClient:
         }
         self._tenant_token: Optional[str] = None
 
-    async def _ensure_token(self) -> str:
-        if self._tenant_token:
+    async def _ensure_token(self, force_refresh: bool = False) -> str:
+        if self._tenant_token and not force_refresh:
             return self._tenant_token
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.post(
@@ -401,9 +404,27 @@ class FeishuClient:
             self._tenant_token = r.json()["tenant_access_token"]
             return self._tenant_token
 
+    async def _get_records_page(self, c: httpx.AsyncClient, params: dict) -> dict:
+        """请求一页记录；tenant_access_token 过期（401）时清缓存重试一次。
+
+        飞书 tenant_access_token 有效期约 2 小时，若只在首次拿一次并永久缓存
+        （旧写法），过期后所有后续轮询都会 401 失败到重启服务为止。这里在拿到
+        401 时强制刷新 token 并重试一次，使行为与 §7.1 错误矩阵的描述一致。
+        """
+        url = (
+            f"{self.BASE}/bitable/v1/apps/{self._app_token}"
+            f"/tables/{self._table_id}/records"
+        )
+        token = await self._ensure_token()
+        r = await c.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+        if r.status_code == 401:
+            token = await self._ensure_token(force_refresh=True)
+            r = await c.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+        r.raise_for_status()
+        return r.json().get("data", {})
+
     async def list_records(self, page_size: int = 100) -> list[FeishuRow]:
         """全量拉取（自动翻页）。飞书表只读，不做写入。"""
-        token = await self._ensure_token()
         rows: list[FeishuRow] = []
         page_token = None
         async with httpx.AsyncClient(timeout=15) as c:
@@ -411,14 +432,7 @@ class FeishuClient:
                 params = {"page_size": page_size}
                 if page_token:
                     params["page_token"] = page_token
-                r = await c.get(
-                    f"{self.BASE}/bitable/v1/apps/{self._app_token}"
-                    f"/tables/{self._table_id}/records",
-                    params=params,
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                r.raise_for_status()
-                data = r.json().get("data", {})
+                data = await self._get_records_page(c, params)
                 for item in data.get("items", []):
                     fields = item.get("fields", {})
                     rows.append(FeishuRow(
@@ -507,7 +521,15 @@ async def _resolve_cid(self, target_path: str) -> int:
     """递归解析 /电视剧/权力的游戏 (2011) 到 cid；缺失中间目录 mkdir_p。
 
     target_path 形如 '/电视剧/权力的游戏 (2011)'。
-    失败回退策略：任意一级失败，返回上一级已解析 cid（降级而非 fail）。
+
+    降级策略仅覆盖"该级目录确实不存在"这一种情况（接口返回 cid=0 → mkdir；
+    mkdir 本身又拿不到新 cid → 回退用上一级已解析 cid，文件落到父目录而非中断）。
+    调用本身抛出的未预期异常（网络错误、p115 接口契约变化等）**不在这里吞掉**，
+    直接向上抛给 TaskRunner 走既有的任务失败流程（status=failed，可重试）。
+    这个函数本来就是为了修"_resolve_cid 失效导致文件全部静默落到根目录"这个
+    bug 存在的；如果这里再用一个大 except Exception 把所有未知错误也当成
+    "正常降级"处理，等于把同一类 bug 换了个隐蔽的位置重新引入一遍——只是从
+    "总是落根目录"变成"某次悄悄落错中间目录"，而且没有任何用户可见的失败信号。
     """
     if not self._lm.is_logged_in():
         return 0
@@ -515,25 +537,19 @@ async def _resolve_cid(self, target_path: str) -> int:
     parts = [p for p in target_path.strip("/").split("/") if p]
     cur_cid = 0  # 根目录
     for name in parts:
-        try:
-            resp = client.dir_remote_path_to_cid(path=f"/{name}", cid=cur_cid)
-            cid = resp.get("data", {}).get("cid", 0) if isinstance(resp, dict) else 0
-            if cid:
-                cur_cid = cid
-                continue
-            # 该级不存在 → mkdir
-            mk = client.mkdir(pid=cur_cid, name=name)
-            new_cid = mk.get("data", {}).get("file_id", 0) if isinstance(mk, dict) else 0
-            if not new_cid:
-                # mkdir 失败 → 回退到上一级
-                logger.warning("_resolve_cid mkdir returned no cid at {!r}", name)
-                return cur_cid
-            cur_cid = new_cid
-        except Exception as e:
-            logger.error(
-                "_resolve_cid failed at {!r}: {}", name, type(e).__name__
-            )
+        resp = client.dir_remote_path_to_cid(path=f"/{name}", cid=cur_cid)
+        cid = resp.get("data", {}).get("cid", 0) if isinstance(resp, dict) else 0
+        if cid:
+            cur_cid = cid
+            continue
+        # 该级不存在 → mkdir
+        mk = client.mkdir(pid=cur_cid, name=name)
+        new_cid = mk.get("data", {}).get("file_id", 0) if isinstance(mk, dict) else 0
+        if not new_cid:
+            # mkdir 明确返回"无 cid"（非异常）→ 回退到上一级，降级而非中断
+            logger.warning("_resolve_cid mkdir returned no cid at {!r}", name)
             return cur_cid
+        cur_cid = new_cid
     return cur_cid
 ```
 
@@ -730,8 +746,8 @@ telegram_admin_user_id: int = 0  # 0 表示取 allowed_user_ids[0]
     ├─ MetadataScraper → 权力的游戏 (2011)
     ├─ PathResolver.resolve → "/电视剧/权力的游戏 (2011)"
     ├─ _resolve_cid("/电视剧/权力的游戏 (2011)")
-    │   ├─ client.dir_remote_path_to_cid(path="/电视剧") → cid=12345
-    │   ├─ client.dir_remote_path_to_cid(path="/电视剧/权力的游戏 (2011)") → cid=0（不存在）
+    │   ├─ client.dir_remote_path_to_cid(path="/电视剧", cid=0) → cid=12345
+    │   ├─ client.dir_remote_path_to_cid(path="/权力的游戏 (2011)", cid=12345) → cid=0（不存在）
     │   ├─ client.mkdir(pid=12345, name="权力的游戏 (2011)") → cid=67890
     │   └─ return 67890
     ├─ TransferTask.run(share_id, password, target_cid=67890)
@@ -813,7 +829,8 @@ pending ──→ running ──┬─→ done           (AuthExpiredError)
 | 飞书字段格式异常 | `_to_text` 兜底返回 "" | link 为空跳过；其他字段忽略 | 静默 |
 | 链接已存在（dedup 命中） | Task.share_hash UNIQUE | 跳过创建；不入队 | 静默；幂等性保证 |
 | _resolve_cid 中间目录缺失 | dir_remote_path_to_cid 返回 cid=0 | mkdir 创建；继续递归 | 静默；自动 mkdir_p |
-| _resolve_cid mkdir 失败 | 异常 / 无 cid 返回 | 回退到上一级已解析 cid | 文件落到父目录（降级而非失败） |
+| _resolve_cid mkdir 返回无 cid（非异常） | mkdir 响应中拿不到 file_id | 回退到上一级已解析 cid | 文件落到父目录（降级而非失败） |
+| _resolve_cid 遇到未预期异常（网络/接口契约变化） | dir_remote_path_to_cid / mkdir 抛出异常 | 不捕获，向上抛给 TaskRunner | 任务标记 failed，前端可见 + 可重试；不会静默落错目录 |
 | AuthExpired (TG/飞书来源) | AuthExpiredError | pending 回退 + Bot 推送 admin | Bot 收到"扫码提醒" |
 | AuthExpired (Web 来源) | AuthExpiredError | pending 回退 + SSE 通知 | 前端弹扫码页 |
 | APScheduler 任务堆积 | max_instances=1 + coalesce=True | 跳过重叠执行 | 静默 |
@@ -836,10 +853,10 @@ pending ──→ running ──┬─→ done           (AuthExpiredError)
 | 测试文件 | 覆盖点 | 关键用例 |
 |---|---|---|
 | `tests/unit/test_task_service.py`（新） | `enqueue_from_external` | (a) 创建新任务；(b) duplicate 返回已存在；(c) invalid 链接返回 None；(d) source_ref 正确填充 |
-| `tests/unit/test_telegram_bot.py`（新） | TelegramAdapter | (a) `_is_allowed` chat_id 命中；(b) `_is_allowed` user_id 命中；(c) 非白名单忽略；(d) `_handle_message` 入队单链接；(e) 多链接多次入队；(f) 无链接提示"未识别"；(g) `notify_auth_expired` 调用 bot.send_message |
-| `tests/unit/test_feishu_client.py`（新） | FeishuClient | (a) `list_records` 单页 + 翻页；(b) `_to_text` str/list[dict]/None；(c) token 缓存；(d) HTTP 错误抛异常 |
+| `tests/unit/test_telegram_bot.py`（新） | TelegramAdapter | (a) `_is_allowed` chat_id 命中；(b) `_is_allowed` user_id 命中；(c) 非白名单忽略；(d) `_handle_message` 入队单链接；(e) 多链接多次入队；(f) 无链接提示"未识别"；(g) `notify_auth_expired` 调用 bot.send_message；(h) 一条消息里"带提取码的链接 + 裸链接"混发，两个都被提取（回归：旧实现 slices 非空即 return，会丢裸链接） |
+| `tests/unit/test_feishu_client.py`（新） | FeishuClient | (a) `list_records` 单页 + 翻页；(b) `_to_text` str/list[dict]/None；(c) token 缓存；(d) HTTP 错误抛异常；(e) 首次请求 401 → 清缓存重试一次并成功 |
 | `tests/unit/test_feishu_sheet.py`（新） | FeishuAdapter | (a) `poll_once` 入队所有行；(b) 空行跳过；(c) hash 命中跳过；(d) 飞书异常不抛出（仅 log） |
-| `tests/integration/test_resolve_cid.py`（新） | _resolve_cid | (a) 全路径存在直接返回；(b) 中间缺失 mkdir；(c) mkdir 失败回退父级；(d) 未登录返回 0 |
+| `tests/integration/test_resolve_cid.py`（新） | _resolve_cid | (a) 全路径存在直接返回；(b) 中间缺失 mkdir；(c) mkdir 返回无 cid 时回退父级（非异常路径）；(d) 未登录返回 0；(e) client 抛出未预期异常时向上传播（不吞掉、不降级） |
 | `tests/integration/test_task_runner_with_adapters.py`（新） | 端到端 | (a) telegram 任务成功；(b) feishu 任务 AuthExpired 触发 notify_auth_expired |
 | `tests/integration/test_api_feishu_test.py`（新） | POST /api/config/feishu/test | (a) 配置正确 → ok=True；(b) 配置错 → ok=False + 可读 message |
 
@@ -933,3 +950,4 @@ TaskRunner + adapters started
 - **下一步**：调用 `superpowers:writing-plans` skill 把本设计转为可执行实施计划，保存到 `docs/superpowers/plans/2026-07-03-plan-b2.md`
 - **执行方式**：subagent-driven-development（用户已默认偏好）
 - **完成验收**：所有单元/集成测试通过 + 部署后人工核查清单全部勾选
+- **实施前必须核实**：`p115client` 的 `dir_remote_path_to_cid(path, cid)` 实际签名与语义——5.5 节 `_resolve_cid` 的逐级递归解析假设该接口"以 `cid` 为基准解析单层相对路径"；本机未安装 `p115client`，这个假设没有被验证过。若实际语义是"必须传从根开始的完整绝对路径"或返回结构不同，需要重新设计这段逻辑，写实施计划前先翻一下这个方法的真实实现。
