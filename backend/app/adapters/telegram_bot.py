@@ -7,18 +7,18 @@
 import re
 from typing import Optional
 
-from loguru import logger  # noqa: F401  (Task 5 会用)
+from loguru import logger
 from telegram import Update
 from telegram.ext import (
-    Application,  # noqa: F401  (Task 5 会用)
-    ApplicationBuilder,  # noqa: F401  (Task 5 会用)
-    CommandHandler,  # noqa: F401  (Task 5 会用)
-    ContextTypes,  # noqa: F401  (Task 5 会用)
-    MessageHandler,  # noqa: F401  (Task 5 会用)
-    filters,  # noqa: F401  (Task 5 会用)
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
 )
 
-from app.services import task_service  # noqa: F401  (Task 5 会用)
+from app.services import task_service
 from app.services.link_parser import SHORT_RE, URL_RE
 
 # "链接 + 提取码"组合切片：先抓 URL（或短链），后跟可选空白 + 提取码关键词 + 1-12 字符码
@@ -29,11 +29,10 @@ _LINK_SLICE_RE = re.compile(
     re.IGNORECASE,
 )
 # 已知限制：_LINK_SLICE_RE 只匹配"链接 + 提取码关键字 + 码"形式。
-# query string 形式（如 https://115.com/s/abc?password=xyz）的 password
-# 不在 _LINK_SLICE_RE 覆盖范围；会落入 bare 分支只返回 URL 字符串本身。
-# 但 password 不会真的丢失——下游 task_service.enqueue_from_external →
-# link_parser.parse(raw_input) 内部会从 query string 中提取 password，
-# 因此 URL 形式的 password 由 parse() 兜底处理。
+# query string 形式（如 https://115.com/s/abc?password=xyz）的密码
+# 不在 _LINK_SLICE_RE 覆盖范围；落入 bare 分支时仅返回 URL，
+# 密码需要下游 task_service.enqueue_from_external → parse() 内部处理
+# （parse 会从 query string 中提取 password）。
 
 
 class TelegramAdapter:
@@ -74,31 +73,88 @@ class TelegramAdapter:
 
         旧实现的 bug：slices 非空即 return，导致"一条带码链接 + 一条裸链接"
         混发时裸链接被丢。这里把切片挖空后再扫一遍剩余文本。
-
-        实现：bare 分支用 finditer + m.group(0) 拿完整 URL 字符串，
-        与 slices 元素形态一致；旧 findall 因 pattern 含命名 group
-        只返回 share_id 字符串，导致异质列表。
         """
         slices = [m.group(0) for m in _LINK_SLICE_RE.finditer(text)]
         remaining = _LINK_SLICE_RE.sub("", text)
-        # 用 finditer 取 m.group(0) 拿完整 URL 字符串，与 slices 元素形态一致
         url_matches = [m.group(0) for m in URL_RE.finditer(remaining)]
         short_matches = [m.group(0) for m in SHORT_RE.finditer(remaining)]
         bare = url_matches or short_matches
         return slices + bare
 
-    # ---------- 以下方法在 Task 5 实现 ----------
+    # ---------- 消息处理 ----------
     async def _handle_message(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        raise NotImplementedError
+        if not self._is_allowed(update):
+            return  # 静默忽略非白名单
+        text = update.effective_message.text or ""
+        links = self._extract_115_links(text)
+        if not links:
+            await ctx.bot.send_message(
+                chat_id=update.effective_chat.id,
+                reply_to_message_id=update.message.message_id,
+                text="未识别到 115 链接，请检查格式",
+            )
+            return
+        created, dup, failed = 0, 0, 0
+        for raw in links:
+            _, status = task_service.enqueue_from_external(
+                source="telegram",
+                raw_input=raw,
+                source_ref=str(update.message.message_id),
+            )
+            if status == "created":
+                created += 1
+            elif status == "duplicate":
+                dup += 1
+            else:
+                failed += 1
+        await ctx.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"已入队 {created} / 重复 {dup} / 失败 {failed}",
+        )
 
     async def _cmd_ping(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        raise NotImplementedError
+        await ctx.bot.send_message(chat_id=update.effective_chat.id, text="pong")
 
+    # ---------- AuthExpired 推送 ----------
     async def notify_auth_expired(self, error_msg: str):
-        raise NotImplementedError
+        """由 TaskRunner._pause_for_auth 回调。"""
+        if self._admin_user_id == 0:
+            logger.warning("AuthExpired 但未配置 admin user id；跳过推送")
+            return
+        if self._app is None:
+            logger.warning("TelegramAdapter 未启动；跳过推送")
+            return
+        try:
+            await self._app.bot.send_message(
+                chat_id=self._admin_user_id,
+                text=f"⚠️ 115 Cookie 过期：{error_msg}\n请到 Web UI 扫码重新登录",
+            )
+        except Exception as e:
+            logger.error("notify_auth_expired failed: {}", type(e).__name__)
 
+    # ---------- 生命周期 ----------
     async def start(self):
-        raise NotImplementedError
+        if not self._token:
+            logger.warning("telegram_bot_token 未配置，跳过 TelegramAdapter 启动")
+            return
+        self._app = ApplicationBuilder().token(self._token).build()
+        self._app.add_handler(CommandHandler("ping", self._cmd_ping))
+        self._app.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
+        )
+        await self._app.initialize()
+        await self._app.start()
+        await self._app.updater.start_polling(drop_pending_updates=True)
+        logger.info("TelegramAdapter started")
 
     async def stop(self):
-        raise NotImplementedError
+        if self._app is None:
+            return
+        try:
+            await self._app.updater.stop()
+            await self._app.stop()
+            await self._app.shutdown()
+        except Exception as e:
+            logger.error("TelegramAdapter stop failed: {}", type(e).__name__)
+        finally:
+            self._app = None
