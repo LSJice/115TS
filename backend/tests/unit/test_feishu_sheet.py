@@ -84,6 +84,29 @@ def test_start_scheduler_registers_job():
     assert a._scheduler is sched
 
 
+def test_start_scheduler_idempotent_when_already_started():
+    """重复 start 不创建第二个 scheduler（避免生命周期泄漏）。"""
+    a = FeishuAdapter(client=MagicMock(), interval_minutes=5)
+    with patch("app.adapters.feishu_sheet.AsyncIOScheduler") as Sched:
+        first_sched = MagicMock()
+        Sched.return_value = first_sched
+        a.start_scheduler()
+        a.start_scheduler()  # 第二次应被忽略
+    Sched.assert_called_once()
+    assert a._scheduler is first_sched
+
+
+def test_start_scheduler_swallows_start_exception():
+    """scheduler.start() 抛错时不污染 _scheduler 字段。"""
+    a = FeishuAdapter(client=MagicMock(), interval_minutes=5)
+    with patch("app.adapters.feishu_sheet.AsyncIOScheduler") as Sched:
+        sched = MagicMock()
+        sched.start.side_effect = RuntimeError("boom")
+        Sched.return_value = sched
+        a.start_scheduler()  # 不抛
+    assert a._scheduler is None
+
+
 def test_stop_scheduler_shutdown():
     a = FeishuAdapter(client=MagicMock(), interval_minutes=5)
     sched = MagicMock()

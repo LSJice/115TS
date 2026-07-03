@@ -53,15 +53,23 @@ class FeishuAdapter:
                 )
 
     def start_scheduler(self):
-        self._scheduler = AsyncIOScheduler()
-        self._scheduler.add_job(
+        if self._scheduler is not None:
+            logger.warning("FeishuAdapter scheduler 已启动；跳过重复 start")
+            return
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
             self.poll_once,
             IntervalTrigger(minutes=self._interval),
             id="feishu_poll",
             max_instances=1,
             coalesce=True,
         )
-        self._scheduler.start()
+        try:
+            scheduler.start()
+        except Exception as e:
+            logger.error("FeishuAdapter scheduler start failed: {}", type(e).__name__)
+            return
+        self._scheduler = scheduler
         logger.info(
             "FeishuAdapter scheduler started (interval={}min)", self._interval
         )
