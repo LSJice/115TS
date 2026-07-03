@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# 日志和测试输出（开发临时文件）
+*.log
+backend/pytest_out.log
+backend/pytest_err.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 工具产物
+.playwright-mcp/
+.spec-workflow/
+.codegraph/
+
+# 数据文件（含 cookie / token 等敏感字段）
+data/
+*.db
+*.db-journal
+.env
+.env.override
+
+# 115 cookie 缓存
+backend/data/p115/
