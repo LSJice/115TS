@@ -16,6 +16,14 @@ from app.services.transfer_task import AuthExpiredError, TransferError, Transfer
 from app.services.login_manager import LoginManager
 
 
+class CIDResolutionError(RuntimeError):
+    """路径解析失败：state=False、契约变化或网络异常。
+
+    抛出此异常让 process_once 走 failed 分支并保留可读 error_msg
+    （避免被通用 except Exception 捕获后退化为 "unexpected: RuntimeError"）。
+    """
+
+
 class TaskRunner:
     """编排器：把 LinkParser / ShareFetcher / Classifier / MetadataScraper /
     PathResolver / TransferTask / Broadcaster 串成完整流水线，并把状态写回 Task 表。
@@ -138,6 +146,9 @@ class TaskRunner:
         except TransferError as e:
             # 异常消息为用户可读文本（如 "提取码错误"），来源 115 API error 字段
             await self._fail(task_id, str(e))
+        except CIDResolutionError as e:
+            # _resolve_cid 失败：保留 115 返回的具体错误原因（如"目录名包含非法字符"）
+            await self._fail(task_id, str(e))
         except Exception as e:
             logger.exception("unexpected error on task {}", task_id)
             await self._fail(task_id, f"unexpected: {type(e).__name__}")
@@ -152,31 +163,35 @@ class TaskRunner:
 
         失败语义（与 spec §5.5 一致）：
           - 未登录 → 返回 0（保留 Plan B1 兜底）
-          - fs_makedirs state=False → 抛 RuntimeError（让任务 failed）
-          - 异常向上传播 → TaskRunner 接管走 failed 流程
+          - fs_makedirs state=False → 抛 CIDResolutionError（让任务 failed）
+          - fs_makedirs 抛异常 → 包装为 CIDResolutionError 保留类型上下文
           - data 缺 id 字段（响应契约变化）→ 用 fs_dir_getid 复查兜底
         """
         if not self._lm.is_logged_in():
             return 0
         client = self._lm.get_client()
-        resp = client.fs_makedirs(target_path)
+        try:
+            resp = client.fs_makedirs(target_path)
+        except Exception as e:
+            raise CIDResolutionError(
+                f"fs_makedirs raised: {type(e).__name__}"
+            ) from e
         if not isinstance(resp, dict) or not resp.get("state"):
             err = resp.get("error", "unknown") if isinstance(resp, dict) else "non-dict response"
-            raise RuntimeError(f"fs_makedirs failed: {err}")
+            raise CIDResolutionError(f"fs_makedirs failed: {err}")
         data = resp.get("data") or {}
-        # 优先取 data.id；为防御响应契约变化，尝试常见同义字段
-        cid = data.get("id") or data.get("cid") or data.get("file_id") or 0
+        cid = data.get("id") or 0
         if cid:
             return int(cid)
         # data 中拿不到 id：用 fs_dir_getid 复查一次（路径已通过 fs_makedirs 保障存在）
         rev = client.fs_dir_getid(target_path)
         if isinstance(rev, dict) and rev.get("state"):
             rev_data = rev.get("data") or {}
-            rev_cid = rev_data.get("id") or rev_data.get("cid") or 0
+            rev_cid = rev_data.get("id") or 0
             if rev_cid:
                 return int(rev_cid)
-        raise RuntimeError(
-            f"fs_makedirs returned state=True but no cid; data={data!r}"
+        raise CIDResolutionError(
+            f"fs_makedirs returned state=True but no cid; data={data!r} (no cid)"
         )
 
     async def _succeed(
