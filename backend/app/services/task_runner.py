@@ -247,7 +247,8 @@ class TaskRunner:
             except Exception as e:
                 # 仅记录异常类型，避免泄露 cookie 等敏感信息
                 logger.error(
-                    "tg_adapter.notify_auth_expired failed: {}", type(e).__name__
+                    "tg_adapter.notify_auth_expired failed on task {}: {}",
+                    task_id, type(e).__name__,
                 )
         # 重新入队等扫码后再次消费
         self.enqueue(task_id)

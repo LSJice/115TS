@@ -15,15 +15,16 @@ def build_minimal_runner(tg_adapter=None):
 
 
 @pytest.mark.asyncio
-async def test_pause_for_auth_telegram_source_calls_tg_notify():
-    """source=telegram + tg_adapter 存在 → 调 notify_auth_expired。"""
+@pytest.mark.parametrize("source", ["telegram", "feishu"])
+async def test_pause_for_auth_bot_source_calls_tg_notify(source):
+    """source in (telegram, feishu) + tg_adapter 存在 → 调 notify_auth_expired。"""
     tg = MagicMock()
     tg.notify_auth_expired = AsyncMock()
     runner = build_minimal_runner(tg_adapter=tg)
 
     task_mock = MagicMock()
     task_mock.id = 42
-    task_mock.source = "telegram"
+    task_mock.source = source
     session_mock = MagicMock()
     session_mock.__enter__ = MagicMock(return_value=session_mock)
     session_mock.__exit__ = MagicMock(return_value=False)
