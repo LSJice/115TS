@@ -45,6 +45,7 @@ class TaskRunner:
         path_resolver: PathResolver | None = None,
         transfer_task: TransferTask | None = None,
         broadcaster=None,
+        tg_adapter=None,
     ):
         self._session_factory = session_factory
         self._lm = login_manager
@@ -54,6 +55,7 @@ class TaskRunner:
         self._path_resolver = path_resolver
         self._transfer_task = transfer_task
         self._broadcaster = broadcaster
+        self._tg_adapter = tg_adapter
         self._queue: asyncio.Queue[int] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
 
@@ -233,10 +235,20 @@ class TaskRunner:
                 return
             t.status = "pending"  # 回退队列，等扫码后再次消费
             t.error_msg = f"需重新登录: {error_msg}"
+            source = t.source
             s.commit()
         await self._notify(
             {"task_id": task_id, "status": "auth_expired", "error": error_msg},
         )
+        # 非 Web 来源且 TG 可达 → Bot 兜底推送（spec §5.6）
+        if source in ("telegram", "feishu") and self._tg_adapter:
+            try:
+                await self._tg_adapter.notify_auth_expired(error_msg)
+            except Exception as e:
+                # 仅记录异常类型，避免泄露 cookie 等敏感信息
+                logger.error(
+                    "tg_adapter.notify_auth_expired failed: {}", type(e).__name__
+                )
         # 重新入队等扫码后再次消费
         self.enqueue(task_id)
 
