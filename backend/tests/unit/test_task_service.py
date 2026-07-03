@@ -79,3 +79,36 @@ def test_enqueue_duplicate_does_not_call_runner(clean_db):
             source="web", raw_input="https://115.com/s/abc1234",
         )
     assert runner_mock.enqueue.call_count == 1
+
+
+def test_enqueue_runner_not_ready_still_creates_task(clean_db):
+    """get_runner() 返回 None（启动期/停机期）→ Task 仍正常创建，状态 created。
+
+    Task 落库为 pending；启动后由 reset_running_to_pending 或下一次扫描处理。
+    不会因 runner 缺失而丢任务。
+    """
+    with patch("app.services.task_service.get_runner", return_value=None):
+        task, status = task_service.enqueue_from_external(
+            source="telegram", raw_input="https://115.com/s/abc1234",
+        )
+    assert status == "created"
+    assert task is not None
+    assert task.status == "pending"
+
+
+def test_enqueue_runner_raises_propagates_but_task_committed(clean_db):
+    """runner.enqueue 抛异常 → 异常向上传播，但 Task 已 commit 为 pending。"""
+    from app.models import Task
+    runner_mock = MagicMock()
+    runner_mock.enqueue.side_effect = RuntimeError("queue full")
+    with patch("app.services.task_service.get_runner", return_value=runner_mock):
+        with pytest.raises(RuntimeError, match="queue full"):
+            task_service.enqueue_from_external(
+                source="web", raw_input="https://115.com/s/abc1234",
+            )
+    # 验证 Task 已落库（不依赖 hash 计算）
+    from app.services.task_service import get_session
+    with get_session() as s:
+        rows = s.query(Task).all()
+        assert len(rows) == 1
+        assert rows[0].status == "pending"
