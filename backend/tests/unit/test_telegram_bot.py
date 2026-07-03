@@ -1,5 +1,3 @@
-import pytest
-from unittest.mock import MagicMock
 from telegram import Chat, Message, Update, User
 
 from app.adapters.telegram_bot import TelegramAdapter
