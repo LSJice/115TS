@@ -144,10 +144,40 @@ class TaskRunner:
 
     # ---------- 辅助 ----------
     async def _resolve_cid(self, target_path: str) -> int:
-        """把 '/电视剧/权力的游戏 (2011)' 解析成 115 cid。
-        Plan A 简化实现：直接返回 0（根目录），由 115 自带的 share_receive 创建子目录。
-        Plan B 完善：递归调用 client.dir_remote_path_to_cid。"""
-        return 0
+        """递归解析 /电视剧/权力的游戏 (2011) 到 cid；缺失中间目录自动 mkdir_p。
+
+        p115client.fs_makedirs 内部封装 fs_dir_getid2(is_create=1)，幂等：
+        - 路径已存在 → 直接返回 cid
+        - 路径不存在 → 自动创建所有中间节点后返回新 cid
+
+        失败语义（与 spec §5.5 一致）：
+          - 未登录 → 返回 0（保留 Plan B1 兜底）
+          - fs_makedirs state=False → 抛 RuntimeError（让任务 failed）
+          - 异常向上传播 → TaskRunner 接管走 failed 流程
+          - data 缺 id 字段（响应契约变化）→ 用 fs_dir_getid 复查兜底
+        """
+        if not self._lm.is_logged_in():
+            return 0
+        client = self._lm.get_client()
+        resp = client.fs_makedirs(target_path)
+        if not isinstance(resp, dict) or not resp.get("state"):
+            err = resp.get("error", "unknown") if isinstance(resp, dict) else "non-dict response"
+            raise RuntimeError(f"fs_makedirs failed: {err}")
+        data = resp.get("data") or {}
+        # 优先取 data.id；为防御响应契约变化，尝试常见同义字段
+        cid = data.get("id") or data.get("cid") or data.get("file_id") or 0
+        if cid:
+            return int(cid)
+        # data 中拿不到 id：用 fs_dir_getid 复查一次（路径已通过 fs_makedirs 保障存在）
+        rev = client.fs_dir_getid(target_path)
+        if isinstance(rev, dict) and rev.get("state"):
+            rev_data = rev.get("data") or {}
+            rev_cid = rev_data.get("id") or rev_data.get("cid") or 0
+            if rev_cid:
+                return int(rev_cid)
+        raise RuntimeError(
+            f"fs_makedirs returned state=True but no cid; data={data!r}"
+        )
 
     async def _succeed(
         self, task_id: int, category: str, target_path: str, metadata,

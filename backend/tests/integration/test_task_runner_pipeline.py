@@ -22,6 +22,11 @@ def mocks():
     """mock 所有外部服务"""
     lm = MagicMock()
     lm.is_logged_in.return_value = True
+    # _resolve_cid 调用 fs_makedirs（幂等创建路径）；给个默认成功返回值
+    lm.get_client.return_value.fs_makedirs.return_value = {
+        "state": True,
+        "data": {"id": 1},
+    }
 
     share_fetcher = MagicMock()
     share_fetcher.fetch = AsyncMock(return_value=MagicMock(
