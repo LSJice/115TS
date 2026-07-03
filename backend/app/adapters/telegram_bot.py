@@ -134,27 +134,42 @@ class TelegramAdapter:
 
     # ---------- 生命周期 ----------
     async def start(self):
+        if self._app is not None:
+            logger.warning("TelegramAdapter 已启动；跳过重复 start")
+            return
         if not self._token:
             logger.warning("telegram_bot_token 未配置，跳过 TelegramAdapter 启动")
             return
-        self._app = ApplicationBuilder().token(self._token).build()
-        self._app.add_handler(CommandHandler("ping", self._cmd_ping))
-        self._app.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
-        )
-        await self._app.initialize()
-        await self._app.start()
-        await self._app.updater.start_polling(drop_pending_updates=True)
-        logger.info("TelegramAdapter started")
+        try:
+            self._app = ApplicationBuilder().token(self._token).build()
+            self._app.add_handler(CommandHandler("ping", self._cmd_ping))
+            self._app.add_handler(
+                MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
+            )
+            await self._app.initialize()
+            await self._app.start()
+            await self._app.updater.start_polling(drop_pending_updates=True)
+            logger.info("TelegramAdapter started")
+        except Exception as e:
+            # 启动失败：清空 _app 让下次 start 可重试；不在 except 内尝试清理（避免二次异常）
+            logger.error("TelegramAdapter start failed: {}", type(e).__name__)
+            self._app = None
 
     async def stop(self):
         if self._app is None:
             return
+        app = self._app
+        self._app = None  # 提前清空，避免重复 stop
+        # 三步独立 try：保证 shutdown 一定执行
         try:
-            await self._app.updater.stop()
-            await self._app.stop()
-            await self._app.shutdown()
+            await app.updater.stop()
         except Exception as e:
-            logger.error("TelegramAdapter stop failed: {}", type(e).__name__)
-        finally:
-            self._app = None
+            logger.error("updater.stop failed: {}", type(e).__name__)
+        try:
+            await app.stop()
+        except Exception as e:
+            logger.error("app.stop failed: {}", type(e).__name__)
+        try:
+            await app.shutdown()
+        except Exception as e:
+            logger.error("app.shutdown failed: {}", type(e).__name__)

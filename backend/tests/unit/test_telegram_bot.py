@@ -229,3 +229,19 @@ async def test_stop_idempotent_when_never_started():
         bot_token="t", allowed_chat_ids=[], allowed_user_ids=[],
     )
     await a.stop()  # 不应抛异常
+
+
+@pytest.mark.asyncio
+async def test_cmd_ping_replies_pong():
+    """_cmd_ping 回复 pong。"""
+    a = TelegramAdapter(
+        bot_token="t", allowed_chat_ids=[100], allowed_user_ids=[],
+    )
+    upd = make_update("/ping", chat_id=100, user_id=999, message_id=1)
+    ctx = MagicMock()
+    ctx.bot.send_message = AsyncMock()
+    await a._cmd_ping(upd, ctx)
+    ctx.bot.send_message.assert_awaited_once()
+    kwargs = ctx.bot.send_message.call_args.kwargs
+    assert kwargs["chat_id"] == 100
+    assert kwargs["text"] == "pong"
