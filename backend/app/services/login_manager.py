@@ -74,15 +74,45 @@ class LoginManager:
         return client
 
     async def start_qrcode_login(self) -> QRStatus:
-        """启动一次扫码登录，返回二维码 URL。"""
-        client = self.get_client()
+        """启动一次扫码登录，返回二维码 PNG 的 data URI。
+
+        115 的 token 接口返回的 data.qrcode 是扫码引导页面（HTML），
+        不是图片本身。真正的图片在 /api/1.0/web/1.0/qrcode?uid=&time=&sign=。
+        后端代理拉取后转 base64 data URI，避免前端跨域 / 误把 HTML 当图片。
+
+        直接用 httpx 调 token 接口，不依赖 P115Client —— 后者在 cookies=None
+        时会强制触发自动登录流程，与扫码登录语义冲突。
+        """
+        import base64
+
+        import httpx
+
         try:
-            resp = client.login_qrcode_token(app="web")
-            data = resp.get("data") or {}
-            qrcode = data.get("qrcode")
+            token_resp = httpx.get(
+                "https://qrcodeapi.115.com/api/1.0/web/1.0/token/",
+                params={"app": "web"},
+                timeout=10,
+            )
+            token_resp.raise_for_status()
+            token_json = token_resp.json()
+            data = (token_json or {}).get("data") or {}
+            uid = data.get("uid")
+            ts = data.get("time")
+            sign = data.get("sign")
+            if not (uid and ts and sign):
+                return QRStatus(state="error", message="二维码响应缺少 uid/time/sign")
+            img_url = "https://qrcodeapi.115.com/api/1.0/web/1.0/qrcode"
+            img_resp = httpx.get(
+                img_url,
+                params={"uid": uid, "time": ts, "sign": sign},
+                timeout=10,
+            )
+            img_resp.raise_for_status()
+            b64 = base64.b64encode(img_resp.content).decode("ascii")
+            data_uri = f"data:image/png;base64,{b64}"
             # 持久化整个 data（含 uid/time/sign，轮询时需要）
             _upsert_qr_payload(data)
-            return QRStatus(state="waiting", qrcode_url=qrcode)
+            return QRStatus(state="waiting", qrcode_url=data_uri)
         except Exception as e:
             logger.error("start_qrcode_login failed: {}", type(e).__name__)
             return QRStatus(state="error", message=str(e))
@@ -93,12 +123,11 @@ class LoginManager:
         if payload is None:
             return QRStatus(state="error", message="无活跃的二维码会话")
         try:
-            # 注意：响应字段 data.code / data.msg 基于 115 /login/qrcode/get/status/ 的常见返回结构假设；
-            # 若集成测试发现不一致，在此调整解析。
             resp = client.login_qrcode_scan_status(payload)
-            code = (resp.get("data") or {}).get("code")
-            msg = (resp.get("data") or {}).get("msg", "")
-            if code == 0:
+            # 115 接口字段：data.status（不是 data.code）
+            # 映射：0=waiting, 1=scanned, 2=success, -1=expired, -2=cancel
+            status = (resp.get("data") or {}).get("status")
+            if status == 2:
                 cookies = client.cookies
                 # 优先用 requests.utils.dict_from_cookiejar（处理 RequestsCookieJar）
                 try:
@@ -113,13 +142,15 @@ class LoginManager:
                         return QRStatus(state="error", message="cookies 转换失败")
                 self._save_cookies(cookies_dict)
                 return QRStatus(state="confirmed", message="登录成功")
-            if code == 1:
-                return QRStatus(state="waiting", message="等待扫码")
-            if code == 2:
+            if status == 1:
                 return QRStatus(state="scanned", message="已扫码，请在手机确认")
-            if code == -1:
+            if status == 0:
+                return QRStatus(state="waiting", message="等待扫码")
+            if status == -1:
                 return QRStatus(state="expired", message="二维码过期")
-            return QRStatus(state="error", message=f"未知 code={code} msg={msg}")
+            if status == -2:
+                return QRStatus(state="expired", message="已取消")
+            return QRStatus(state="error", message=f"未知 status={status}")
         except Exception as e:
             logger.error("poll_qrcode_status failed: {}", type(e).__name__)
             return QRStatus(state="error", message=str(e))

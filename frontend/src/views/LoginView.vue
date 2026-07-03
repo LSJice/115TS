@@ -49,7 +49,11 @@ function stopPolling() {
 async function pollOnce() {
   try {
     const resp = await authApi.pollQrcodeStatus()
-    if (resp.state === 'success' || resp.state === 'logged_in') {
+    if (
+      resp.state === 'success' ||
+      resp.state === 'logged_in' ||
+      resp.state === 'confirmed'
+    ) {
       stopPolling()
       state.value = 'success'
       message.value = '登录成功，正在跳转…'
@@ -59,7 +63,7 @@ async function pollOnce() {
       stopPolling()
       state.value = 'error'
       message.value = resp.message || '二维码已失效，请重新获取'
-    } else if (resp.state === 'scaned') {
+    } else if (resp.state === 'scanned' || resp.state === 'scaned') {
       message.value = '已扫描，请在手机上确认'
     } else {
       message.value = resp.message || '等待扫描…'
